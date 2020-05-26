@@ -3,8 +3,7 @@ library(ggplot2)
 library(gganimate)
 library(purrr)
 
-code_frame <- data.frame(col=5, height=seq(55, -5, length.out=50), char=sample(katakana, 1), frame=1:50)
-
+#code rain character set
 katakana <- c("\u30a0", "\u30a1", "\u30a2", "\u30a3", "\u30a4", "\u30a5", "\u30a6", "\u30a7", "\u30a8",
               "\u30a9", "\u30aa", "\u30ab", "\u30ac", "\u30ad", "\u30ae", "\u30af", "\u30b0", "\u30b1",
               "\u30b2", "\u30b3", "\u30b4", "\u30b5", "\u30b6", "\u30b7", "\u30b8", "\u30b9", "\u30ba",
@@ -17,32 +16,12 @@ katakana <- c("\u30a0", "\u30a1", "\u30a2", "\u30a3", "\u30a4", "\u30a5", "\u30a
               "\u30f1", "\u30f2", "\u30f3", "\u30f4", "\u30f5", "\u30f6", "\u30f7", "\u30f8", "\u30f9",
               "\u30fa", "\u30fb", "\u30fc", "\u30fd", "\u30fe", "\u30ff")
 
-
-ggplot(code_frame, aes(x=col, y=height)) +
-  geom_text(aes(label = char), colour=hsv(0.5, 0.8, 0.8)) +
-  coord_cartesian(xlim=c(1,100), ylim=c(0,50)) +
-  theme(plot.background = element_rect(fill = "black"),
-        axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        panel.background = element_rect(fill = 'black'),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank()) +
-  transition_states(states = frame, transition_length = 0.5, state_length = 0)
-
-
-#active columns
-
-#column activator
-#random char changes
-#leading chars (white colour)
-#base colour value for column darkness
-
+#parameters and behaviour
 total_col <- 100
 total_col_padded <- round(total_col * 1.1, digits=0)
-active_col_perc <- 0.7
-num_initial_col <- round(total_col_padded * active_col_perc, digits=0)
+active_col_perc <- 0.85
+initial_col_perc <- 0.3
+num_initial_col <- round(total_col_padded * initial_col_perc, digits=0)
 col_min <- round(1 - total_col * 0.05, digits=0)
 col_max <- round(total_col + total_col * 0.05, digits=0)
 
@@ -51,10 +30,17 @@ start_pos_min <- total_row * 1.1
 start_pos_max <- (total_row * 1.1) + 10
 row_bot_cutoff <- round(0 - total_row * 0.05, digits=0)
 
-lifespan_min = round(total_row * 0.6)
-lifespan_max = round(total_row * 1.3)
+lifespan_min = round(total_row * 0.9)
+lifespan_max = round(total_row * 1.5)
 
-fade_sequence_length = 10
+ring_buffer <- 10
+ring_active <- FALSE
+
+res_height <- 1080
+res_width <- 2560
+x_scale_adj <- ifelse((res_width/total_col)/(res_height/total_row) > 1, (res_width/total_col)/(res_height/total_row), 1)
+y_scale_adj <- ifelse((res_height/total_row)/(res_width/total_col) > 1, (res_heigth/total_row)/(res_width/total_col), 1)
+
 
 #HELPER FUNCTIONS
 gen_base_val <- function()
@@ -83,9 +69,9 @@ sat_aging <- function(age)
   return(sat)
 }
 
-val_aging <- function(age, lifespan, base_val, val)
+val_aging <- function(fade_length, base_val, val)
 {
-  return(pmax(val - base_val/fade_sequence_length, 0))
+  return(pmax(val - base_val/fade_length, 0))
 }
 
 
@@ -95,35 +81,44 @@ rainframe <- data.frame(frame = 0,
                         h = sample(start_pos_min:start_pos_max, num_initial_col, replace = T), 
                         char = sample(katakana, num_initial_col, replace = T), 
                         leading = T,
-                        speed = ifelse(sample(runif(num_initial_col, 0, 1), num_initial_col) > 0.95, 2, 1),
+                        speed = ifelse(sample(runif(num_initial_col, 0, 1), num_initial_col) > 0.85, 2, 1),
                         age = 1,
                         lifespan = sample(lifespan_min:lifespan_max, num_initial_col, replace=T),
+                        fade_length = sample(6:10, num_initial_col, replace=T),
                         expired = F,
+                        display = T,
+                        special = F,
                         base_val = replicate(num_initial_col, gen_base_val()), 
-                        hue = 0.5, 
+                        hue = 0.525, 
                         sat = 1) %>%
   mutate(val = base_val)
 
 
-for(i in 1:1000)
+#Iterate frames
+for(i in 1:500)
 {
   
+  working_frame <- rainframe %>%
+    filter(frame == i-1, special == F) %>%
+    mutate(display = T)
+  
   #mark rain elements that have faded, moved off-screen, or otherwise expired as EXPIRED
-  rainframe <- rainframe %>%
+  working_frame <- working_frame %>%
     mutate(expired = ifelse(h < row_bot_cutoff | age == lifespan | val < 0.01, T, F))
   
   #Check num active columns, initialize new columns if below threshold
-  active_col <- rainframe %>%
-    filter(h > 0.15*total_row, frame == i-1, !expired) %>%
+  active_col <- working_frame %>%
+    filter(h > 0.15*total_row, !expired) %>%
     distinct(col) %>%
     .$col
   
   avail_col <- (col_min:col_max)[! col_min:col_max %in% active_col]
   
   #randomly select new columns to activate if total is below threshold
-  if(length(active_col)/total_col_padded <= 0.7)
+  if(length(active_col)/total_col_padded < active_col_perc)
   {
-    new_col_activations <- sample(avail_col, sample(1:length(avail_col), 1))
+    #new_col_activations <- sample(avail_col, sample(1:length(avail_col), 1))
+    new_col_activations <- sample(avail_col, min(sample(1:length(avail_col)), 0.3 * total_col))
     
     #generate data rows for new columns
     new_cols <- data.frame(frame = i,
@@ -131,150 +126,184 @@ for(i in 1:1000)
                            h = sample(start_pos_min:start_pos_max, length(new_col_activations), replace = T), 
                            char = sample(katakana, length(new_col_activations), replace = T), 
                            leading = T,
-                           speed = ifelse(sample(runif(length(new_col_activations), 0, 1), length(new_col_activations)) > 0.95, 2, 1),
+                           speed = ifelse(sample(runif(length(new_col_activations), 0, 1), length(new_col_activations)) > 0.85, 2, 1),
                            age = 1,
                            lifespan = sample(lifespan_min:lifespan_max, length(new_col_activations), replace=T),
+                           fade_length = sample(6:10, length(new_col_activations), replace=T),
                            expired = F,
+                           display = T,
+                           special = F,
                            base_val = replicate(length(new_col_activations), gen_base_val()), 
-                           hue = 0.5, 
+                           hue = 0.525, 
                            sat = 1) %>%
       mutate(val = base_val)
     
-    #append to overall rainframe
-    rainframe <- rainframe %>%
+    #append to working frame
+    working_frame <- working_frame %>%
       rbind(new_cols)
-    
-  }else
-  {
-
   }
+    
   
-  #persist trailing chars from previous frame
-  still_trailing <- rainframe %>%
+  #persist trailing chars from previous frame with glitch chance (randomly change chars)
+  num_trailing <- working_frame %>%
+    filter(frame == i-1, !leading, !expired) %>%
+    nrow()
+  
+  still_trailing <- working_frame %>%
     filter(frame == i-1, !leading, !expired) %>%
     mutate(frame = i,
+           char = ifelse(runif(num_trailing, 0, 1) > 0.98, sample(katakana, num_trailing, replace=T), as.character(char)),
            age = age+speed,
            sat = sat_aging(age))
   
-  #append to overall rainframe
-  rainframe <- rainframe %>%
+  #append to working frame
+  working_frame <- working_frame %>%
     rbind(still_trailing)
   
   #simulate 'fall' - move leading chars down by speed variable
-  num_leading_chars <- rainframe %>%
+  num_leading_chars <- working_frame %>%
     filter(leading == T, frame == i-1, !expired) %>%
     nrow()
     
-  leading_chars <- rainframe %>%
+  leading_chars <- working_frame %>%
     filter(leading == T, frame == i-1, !expired) %>%
     mutate(frame = i,
            h = h - speed,
-           #char = ifelse(runif(length(active_col), 0, 1) > 0.8, sample(katakana, length(active_col), replace = T), as.character(char)),
            char = sample(katakana, num_leading_chars, replace = T),
            age = age+speed,
            sat = 0)
     
-  #append to overall rainframe
-  rainframe <- rainframe %>%
+  #append to working frame
+  working_frame <- working_frame %>%
     rbind(leading_chars)
   
   
   #generate trailing chars in wake of leading chars
-  max_speed <- rainframe %>%
+  max_speed <- working_frame %>%
     filter(leading == T & frame == i-1 & !expired) %>%
     .$speed %>%
     max()
   
-  for(j in 1:max_speed)
+  if(max_speed > 0)
   {
-    num_trailing <- rainframe %>%
-      filter(leading == T, frame == i-1, !expired) %>%
-      nrow()
-    
-    trailing_chars <- rainframe %>%
-      filter(leading == T, frame == i-1, !expired) %>%
-      mutate(frame = i,
-             h = h - j + 1,
-             char = ifelse(j > 1, sample(katakana, length(active_col), replace = T), as.character(char)),
-             leading = F,
-             age = 1,
-             sat = sat_aging(age))
-    
-    #append to rainframe
-    rainframe <- rainframe %>%
-      rbind(trailing_chars)
+    for(j in 1:max_speed)
+    {
+      num_trailing <- working_frame %>%
+        filter(leading == T, frame == i-1, !expired) %>%
+        nrow()
+      
+      trailing_chars <- working_frame %>%
+        filter(leading == T, frame == i-1, !expired) %>%
+        mutate(frame = i,
+               h = h - j + 1,
+               char = ifelse(j > 1, sample(katakana, length(active_col), replace = T), as.character(char)),
+               leading = F,
+               age = 1,
+               sat = sat_aging(age))
+      
+      #append to working frame
+      working_frame <- working_frame %>%
+        rbind(trailing_chars)
+    }
   }
   
+  
   #fade chars approaching lifespan age
+  working_frame <- working_frame %>%
+    mutate(val = ifelse(!leading & frame == i & !expired & lifespan - age < fade_length, val_aging(fade_length, base_val, val), val))
+  
+  
+  #magenta ring module
+  if(i > total_row)
+  {
+    if(!ring_active)
+    {
+      ring_buffer <- ring_buffer - 1
+    }
+    
+    if(!ring_active && ring_buffer == 0)
+    {
+      center_x <- sample(round(total_col * 0.2, digits = 0):round(total_col * 0.8, digits = 0), 1)
+      center_y <- sample(round(total_row * 0.2, digits = 0):round(total_row * 0.8, digits = 0), 1)
+      
+      radius <- sample(50:100, 1) %>% ifelse(. %% 2 > 0, . + 1, .)
+      ring_active <- TRUE
+    }
+    
+    if(ring_active)
+    {
+      #deactivate chars in place of ring chars
+      working_frame <- working_frame %>%
+        mutate(display = ifelse(between(sqrt( ((center_x - col)*x_scale_adj)^2 + ((center_y - h)*y_scale_adj)^2 ), radius - 0.5, radius + 3), F, display))
+      
+      ring_chars <- working_frame %>%
+        filter(between(sqrt( ((center_x - col)*x_scale_adj)^2 + ((center_y - h)*y_scale_adj)^2 ), radius - 0.5, radius + 3))
+      
+      ring_chars <- ring_chars %>%
+        mutate(display = T,
+               special = T,
+               sat = pmax(sat - 0.4, 0),
+               hue = ifelse(runif(nrow(ring_chars), -0.5, sqrt( ((center_x - col)*x_scale_adj)^2 + ((center_y - h)*y_scale_adj)^2 ) - radius) < 0.7, 0.8, 0.525))
+      
+      working_frame <- working_frame %>%
+        rbind(ring_chars)
+        
+      radius <- radius - 2
+      
+      if(radius == 0)
+      {
+        ring_active <- FALSE
+        ring_buffer <- sample(7:15, 1)
+      }
+    }
+
+  }
+  
+  #append working frame to rainframe
   rainframe <- rainframe %>%
-    mutate(val = ifelse(!leading & frame == i & !expired & lifespan - age < fade_sequence_length, val_aging(age, lifespan, base_val, val), val))
+    rbind(working_frame)
 }
 
 
-rainplot <- ggplot(rainframe, aes(x=col, y=h)) +
-  geom_text(aes(label = char, colour=hsv(hue, sat, val)), size=1.5, show.legend = F) +
+rainplot <- ggplot(filter(rainframe, display), aes(x=col, y=h)) +
+  geom_text(aes(label = char, colour=hsv(hue, sat, val)), size=2, show.legend = F) +
   scale_colour_identity() +
   coord_cartesian(xlim=c(1,100), ylim=c(0,50)) +
-  theme(plot.background = element_rect(fill = "black"),
-        axis.title = element_text(colour = 'white'),
+  theme(axis.title = element_text(colour = 'white'),
         axis.title.x = element_blank(),
         axis.text.x = element_blank(),
         axis.title.y = element_blank(),
         axis.text.y = element_blank(),
         axis.ticks = element_blank(),
+        plot.background = element_rect(fill = "black", colour = "black"),
         panel.background = element_rect(fill = 'black'),
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank()) +
   transition_manual(frames = frame)
 
 #test animatjion
-animate(rainplot)
+#animate(rainplot)
 
 #quality animation
-animate(rainplot, nframes = 1001, fps=20, width=1920, height=1080, res=300)
+animate(rainplot, nframes = max(rainframe$frame) + 1, fps=15, width=2560, height=1080, res=300)
+animate(rainplot, nframes = 100, fps=15, width=2560, height=1080, res=300)
 
 #save animation
-anim_save('code_rainv3.gif', animation = last_animation(), path = '.')
-
-gganimate(rainplot, nframes=500, ani.width=1920, ani.height=1080, ani.res=2000)
+anim_save('code_rainv6.gif', animation = last_animation(), path = '.')
 
 
-rainplot_test <- ggplot(filter(rainframe, frame < 40), aes(x=col, y=h)) +
-  geom_text(aes(label = char, colour=hsv(hue, sat, val)), size=1.5, show.legend = F) +
+ggplot(filter(rainframe, display, frame == 85), aes(x=col, y=h)) +
+  geom_text(aes(label = char, colour=hsv(hue, sat, val)), size=2, show.legend = F) +
   scale_colour_identity() +
   coord_cartesian(xlim=c(1,100), ylim=c(0,50)) +
-  theme(plot.background = element_rect(fill = "black"),
-        axis.title = element_text(colour = 'white'),
+  theme(axis.title = element_text(colour = 'white'),
         axis.title.x = element_blank(),
         axis.text.x = element_blank(),
         axis.title.y = element_blank(),
         axis.text.y = element_blank(),
         axis.ticks = element_blank(),
+        plot.background = element_rect(fill = "black", colour = "black"),
         panel.background = element_rect(fill = 'black'),
         panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank()) +
-  transition_manual(frames = frame)
-
-animate(rainplot_test, fps=20, width=1920, height=1080, res=300)
-
-
-for(i in 45:75)
-{
-  ggplot(filter(rainframe, frame == i), aes(x=col, y=h)) +
-    geom_text(aes(label = char, colour=hsv(hue, sat, val)), size=3, show.legend = F) +
-    scale_colour_identity() +
-    coord_cartesian(xlim=c(1,100), ylim=c(0,50)) +
-    theme(plot.background = element_rect(fill = "black"),
-          axis.title = element_text(colour = 'white'),
-          axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks = element_blank(),
-          panel.background = element_rect(fill = 'black'),
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank())
-  
-  ggsave(filename = paste0(i, '.png'), device = 'png', path = 'man_saved_images/', width = 16, height = 9, dpi = 300)
-}
+        panel.grid.minor = element_blank())
 
